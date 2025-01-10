@@ -7,9 +7,11 @@ from copy import deepcopy
 from collections import Counter
 from argparse import ArgumentParser
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
+from data.utils.schemes.flower import flower_partition
 from src.utils.tools import fix_random_seed
 from data.utils.process import (
     exclude_domain,
@@ -111,7 +113,7 @@ def main(args):
                     label_set=valid_label_set,
                     client_num=client_num,
                     alpha=args.alpha,
-                    least_samples=args.least_samples,
+                    min_samples_per_client=args.min_samples_per_client,
                     partition=partition,
                     stats=stats,
                 )
@@ -149,6 +151,17 @@ def main(args):
                     gmm_init_params=args.gmm_init_params,
                     seed=args.seed,
                     use_cuda=args.use_cuda,
+                    partition=partition,
+                    stats=stats,
+                )
+            elif args.flower_partitioner_class != "":
+                flower_partition(
+                    targets=targets[target_indices],
+                    target_indices=target_indices,
+                    label_set=valid_label_set,
+                    client_num=client_num,
+                    flower_partitioner_class=args.flower_partitioner_class,
+                    flower_partitioner_kwargs=args.flower_partitioner_kwargs,
                     partition=partition,
                     stats=stats,
                 )
@@ -353,7 +366,11 @@ if __name__ == "__main__":
 
     # Dirichlet
     parser.add_argument("-a", "--alpha", type=float, default=0)
-    parser.add_argument("-ls", "--least_samples", type=int, default=40)
+    parser.add_argument("-ms", "--min_samples_per_client", type=int, default=10)
+
+    # Flower partitioner
+    parser.add_argument("-fpc", "--flower_partitioner_class", type=str, default="")
+    parser.add_argument("-fpk", "--flower_partitioner_kwargs", type=str, default="{}")
 
     # For synthetic data only
     parser.add_argument("--gamma", type=float, default=0.5)
@@ -376,12 +393,12 @@ if __name__ == "__main__":
 
     # For semantic partition only
     parser.add_argument("-sm", "--semantic", type=int, default=0)
-    parser.add_argument("--efficient_net_type", type=int, default=3)
+    parser.add_argument("--efficient_net_type", type=int, default=7)
     parser.add_argument("--gmm_max_iter", type=int, default=100)
     parser.add_argument(
         "--gmm_init_params", type=str, choices=["random", "kmeans"], default="random"
     )
-    parser.add_argument("--pca_components", type=int, default=256)
+    parser.add_argument("--pca_components", type=Optional[int], default=None)
     parser.add_argument("--use_cuda", type=int, default=1)
     args = parser.parse_args()
     main(args)

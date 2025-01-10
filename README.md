@@ -85,6 +85,8 @@ FL-bench welcomes PR on everything that can make this project better.
 - ***PeFLL*** -- [PeFLL: Personalized Federated Learning by Learning to Learn](https://openreview.net/forum?id=MrYiwlDRQO) (ICLR'24)
 - ***FLUTE*** -- [Federated Representation Learning in the Under-Parameterized Regime](https://openreview.net/forum?id=LIQYhV45D4) (ICML'24)
 - ***FedAS*** -- [FedAS: Bridging Inconsistency in Personalized Federated Learning](https://openaccess.thecvf.com/content/CVPR2024/html/Yang_FedAS_Bridging_Inconsistency_in_Personalized_Federated_Learning_CVPR_2024_paper.html) (CVPR'24)
+- ***pFedFDA*** -- [pFedFDA: Personalized Federated Learning via Feature Distribution Adaptation](http://arxiv.org/abs/2411.00329) (NeurIPS 2024)
+- ***Floco*** -- [Federated Learning over Connected Modes](https://openreview.net/forum?id=JL2eMCfDW8) (NeurIPS'24)
 <!-- </details> -->
 
 
@@ -199,7 +201,7 @@ FL-bench supports `visdom` and `tensorboard`.
 # your_config.yaml
 common:
   ...
-  visible: tensorboard # options: [null, visdom, tensorboard]
+  monitor: tensorboard # options: [null, visdom, tensorboard]
 ```
 > \[!NOTE\]
 > You needs to launch `visdom` / `tensorboard` server by yourself.
@@ -371,11 +373,13 @@ You can find all details in [`FedAvgClient`](src/client/fedavg.py) and [`FedAvgS
 ```bibtex
 @software{Tan_FL-bench,
   author = {Tan, Jiahao and Wang, Xinpeng},
-  license = {MIT},
+  license = {GPL-3.0},
   title = {{FL-bench: A federated learning benchmark for solving image classification tasks}},
   url = {https://github.com/KarhouTam/FL-bench}
 }
+```
 
+```bibtex
 @misc{tan2023pfedsim,
   title={pFedSim: Similarity-Aware Model Aggregation Towards Personalized Federated Learning}, 
   author={Jiahao Tan and Yipeng Zhou and Gang Liu and Jessie Hui Wang and Shui Yu},

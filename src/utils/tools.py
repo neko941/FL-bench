@@ -2,16 +2,15 @@ import os
 import random
 from argparse import Namespace
 from collections import OrderedDict
-from copy import deepcopy
 from pathlib import Path
-from typing import Callable, Iterator, Sequence, Union
+from typing import Callable, Dict, Iterator, List, Sequence, Tuple, Union
 
 import numpy as np
 import pynvml
 import torch
 from omegaconf import DictConfig
 from rich.console import Console
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.utils.constants import DEFAULTS
 from src.utils.metrics import Metrics
@@ -88,11 +87,12 @@ def vectorize(
 
 
 @torch.no_grad()
-def evalutate_model(
+def evaluate_model(
     model: torch.nn.Module,
     dataloader: DataLoader,
     criterion=torch.nn.CrossEntropyLoss(reduction="sum"),
     device=torch.device("cpu"),
+    model_in_train_mode: bool = False,
 ) -> Metrics:
     """For evaluating the `model` over `dataloader` and return metrics.
 
@@ -101,11 +101,15 @@ def evalutate_model(
         dataloader (DataLoader): Target dataloader.
         criterion (optional): The metric criterion. Defaults to torch.nn.CrossEntropyLoss(reduction="sum").
         device (torch.device, optional): The device that holds the computation. Defaults to torch.device("cpu").
+        model_in_eval_mode (bool, optional): Set as `True` to switch model to eval mode. Defaults to `True`.
 
     Returns:
         Metrics: The metrics objective.
     """
-    model.eval()
+    if model_in_train_mode:
+        model.train()
+    else:
+        model.eval()
     model.to(device)
     metrics = Metrics()
     for x, y in dataloader:
@@ -210,6 +214,7 @@ def parse_args(
             )
             final_args.mode = "serial"
             del final_args.parallel
+
     return final_args
 
 
@@ -247,3 +252,54 @@ class Logger:
     def close(self):
         if self.logfile_output_stream:
             self.logfile_output_stream.close()
+
+
+def initialize_data_loaders(
+    dataset: Dataset,
+    data_indices: List[Dict[str, List[int]]],
+    batch_size: int = 32,
+    **dataloader_kwargs,
+) -> Tuple[DataLoader, DataLoader, DataLoader, Subset, Subset, Subset]:
+    """Initialize data loaders for training, validation, and testing.
+
+    Args:
+        dataset: The dataset to be used for creating subsets.
+        data_indices: A list of dictionaries, where each dictionary contains
+            the indices for 'train', 'val', and 'test' splits for a client.
+        batch_size: The batch size for the data loaders. Defaults to 32.
+        **dataloader_kwargs: Additional keyword arguments for the data loaders.
+
+    Returns:
+        A tuple containing:
+        - trainloader: DataLoader for the training set.
+        - testloader: DataLoader for the test set.
+        - valloader: DataLoader for the validation set.
+        - trainset: Subset of the dataset for training.
+        - testset: Subset of the dataset for testing.
+        - valset: Subset of the dataset for validation.
+    """
+    val_indices = np.concatenate(
+        [client_i_indices["val"] for client_i_indices in data_indices]
+    )
+    test_indices = np.concatenate(
+        [client_i_indices["test"] for client_i_indices in data_indices]
+    )
+    train_indices = np.concatenate(
+        [client_i_indices["train"] for client_i_indices in data_indices]
+    )
+
+    valset = Subset(dataset, val_indices)
+    testset = Subset(dataset, test_indices)
+    trainset = Subset(dataset, train_indices)
+
+    valloader = DataLoader(
+        valset, batch_size=batch_size, shuffle=False, **dataloader_kwargs
+    )
+    testloader = DataLoader(
+        testset, batch_size=batch_size, shuffle=False, **dataloader_kwargs
+    )
+    trainloader = DataLoader(
+        trainset, batch_size=batch_size, shuffle=True, **dataloader_kwargs
+    )
+
+    return trainloader, testloader, valloader, trainset, testset, valset

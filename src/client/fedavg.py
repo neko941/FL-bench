@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, Subset
 from data.utils.datasets import BaseDataset
 from src.utils.metrics import Metrics
 from src.utils.models import DecoupledModel
-from src.utils.tools import evalutate_model, get_optimal_cuda_device
+from src.utils.tools import evaluate_model, get_optimal_cuda_device
 
 
 class FedAvgClient:
@@ -105,16 +105,17 @@ class FedAvgClient:
 
         eval_msg = []
         for split, color, flag, subset in [
-            ["train", "yellow", self.args.common.eval_train, self.trainset],
-            ["val", "green", self.args.common.eval_val, self.valset],
-            ["test", "cyan", self.args.common.eval_test, self.testset],
+            ["train", "yellow", self.args.common.test.client.train, self.trainset],
+            ["val", "green", self.args.common.test.client.val, self.valset],
+            ["test", "cyan", self.args.common.test.client.test, self.testset],
         ]:
             if len(subset) > 0 and flag:
                 eval_msg.append(
                     f"client [{self.client_id}]\t"
-                    f"[{color}]({split}set)\t"
-                    f"loss: {eval_results['before'][split].loss:.4f} -> {eval_results['after'][split].loss:.4f}\t"
-                    f"accuracy: {eval_results['before'][split].accuracy:.2f}% -> {eval_results['after'][split].accuracy:.2f}%"
+                    f"[{color}]({split}set)[/{color}]\t"
+                    f"[red]loss: {eval_results['before'][split].loss:.4f} -> "
+                    f"{eval_results['after'][split].loss:.4f}\t[/red]"
+                    f"[blue]accuracy: {eval_results['before'][split].accuracy:.2f}% -> {eval_results['after'][split].accuracy:.2f}%[/blue]"
                 )
 
         eval_results["message"] = eval_msg
@@ -125,7 +126,10 @@ class FedAvgClient:
         self.local_epoch = package["local_epoch"]
         self.load_data_indices()
 
-        if package["optimizer_state"]:
+        if (
+            package["optimizer_state"]
+            and not self.args.common.reset_optimizer_on_global_epoch
+        ):
             self.optimizer.load_state_dict(package["optimizer_state"])
         else:
             self.optimizer.load_state_dict(self.init_optimizer_state)
@@ -148,7 +152,7 @@ class FedAvgClient:
                 for key in self.regular_params_name
             )
 
-    def train(self, server_package: dict[str, Any]):
+    def train(self, server_package: dict[str, Any]) -> dict:
         self.set_parameters(server_package)
         self.train_with_eval()
         client_package = self.package()
@@ -240,24 +244,36 @@ class FedAvgClient:
         test_metrics = Metrics()
         criterion = torch.nn.CrossEntropyLoss(reduction="sum")
 
-        if len(self.testset) > 0 and self.args.common.eval_test:
-            test_metrics = evalutate_model(
+        if (
+            len(self.testset) > 0
+            and (self.testing or self.args.common.client_side_evaluation)
+            and self.args.common.test.client.test
+        ):
+            test_metrics = evaluate_model(
                 model=target_model,
                 dataloader=self.testloader,
                 criterion=criterion,
                 device=self.device,
             )
 
-        if len(self.valset) > 0 and self.args.common.eval_val:
-            val_metrics = evalutate_model(
+        if (
+            len(self.valset) > 0
+            and (self.testing or self.args.common.client_side_evaluation)
+            and self.args.common.test.client.val
+        ):
+            val_metrics = evaluate_model(
                 model=target_model,
                 dataloader=self.valloader,
                 criterion=criterion,
                 device=self.device,
             )
 
-        if len(self.trainset) > 0 and self.args.common.eval_train:
-            train_metrics = evalutate_model(
+        if (
+            len(self.trainset) > 0
+            and (self.testing or self.args.common.client_side_evaluation)
+            and self.args.common.test.client.train
+        ):
+            train_metrics = evaluate_model(
                 model=target_model,
                 dataloader=self.trainloader,
                 criterion=criterion,
@@ -290,7 +306,7 @@ class FedAvgClient:
         }
 
         results["before"] = self.evaluate()
-        if self.args.common.finetune_epoch > 0:
+        if self.args.common.test.client.finetune_epoch > 0:
             frz_params_dict = deepcopy(self.model.state_dict())
             self.finetune()
             results["after"] = self.evaluate()
@@ -306,7 +322,7 @@ class FedAvgClient:
         """
         self.model.train()
         self.dataset.train()
-        for _ in range(self.args.common.finetune_epoch):
+        for _ in range(self.args.common.test.client.finetune_epoch):
             for x, y in self.trainloader:
                 if len(x) <= 1:
                     continue

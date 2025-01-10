@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
 from src.client.fedavg import FedAvgClient
-from src.utils.tools import evalutate_model
+from src.utils.tools import evaluate_model
 
 
 class MetaFedClient(FedAvgClient):
@@ -35,9 +35,7 @@ class MetaFedClient(FedAvgClient):
     def warmup(self, server_package: dict[str, Any]):
         self.set_parameters(server_package)
         self.fit()
-        metrics = evalutate_model(
-            self.model, self.special_valloader, device=self.device
-        )
+        metrics = evaluate_model(self.model, self.special_valloader, device=self.device)
         return dict(
             client_model_params=OrderedDict(
                 (key, param.detach().cpu().clone())
@@ -103,9 +101,7 @@ class MetaFedClient(FedAvgClient):
         self.set_parameters(server_package)
         self.train_with_eval()
         client_package = self.package()
-        metrics = evalutate_model(
-            self.model, self.special_valloader, device=self.device
-        )
+        metrics = evaluate_model(self.model, self.special_valloader, device=self.device)
         client_package["client_flag"] = metrics.accuracy > self.args.metafed.threshold_1
         return client_package
 
@@ -116,10 +112,10 @@ class MetaFedClient(FedAvgClient):
         self.teacher.load_state_dict(
             server_package["teacher_model_params"], strict=False
         )
-        student_metrics = evalutate_model(
+        student_metrics = evaluate_model(
             self.model, self.special_valloader, device=self.device
         )
-        teacher_metrics = evalutate_model(
+        teacher_metrics = evaluate_model(
             self.teacher, self.special_valloader, device=self.device
         )
         teacher_acc = teacher_metrics.accuracy

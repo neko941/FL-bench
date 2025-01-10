@@ -79,9 +79,8 @@ common:
   join_ratio: 0.1 # Ratio for (client each round) / (client num in total).
   global_epoch: 100 # Number of global epochs, also called communication round.
   local_epoch: 5 # Number if epochs of client local training.
-  finetune_epoch: 0 # Number of epochs of clients fine-tunning their models before test.
   batch_size: 32 # Data batch size for client local training.
-  test_interval: 100 # Interval round of performing test on all test clients.
+  reset_optimizer_on_global_epoch: true # Whether to reset optimizer on each global epoch.
 
   # The ratio of stragglers (set in [0, 1]).
   # Stragglers would not perform full-epoch local training as normal clients.
@@ -95,19 +94,40 @@ common:
   # drop: clients will drop their buffers after training done.
   buffers: global # [local, global, drop]
 
-  # Set eval_<...> as true for performing evaluation on <...>sets held by
-  # this round's joined clients before and after local training.
-  eval_test: true
-  eval_val: false
-  eval_train: false
+  # Whether to evaluate client local models (that before and after local training) on client side.
+  # You can deactivating this for acclerating training.
+  # NOTE: deactivate this feature will affect features like logging and monitoring.
+  client_side_evaluation: true
+
+  # The evaluation settings for client side and server side.
+  test:
+    # For example, Set client.testset as true to evaluate on local testsets from selected clients with client local models.
+    # Frequency is set by `client.interval`. Negative value for disabling.
+    client:
+      interval: 100
+      finetune_epoch: 0 # Number of epochs for clients fine-tunning their models before testing.
+      train: false
+      val: false
+      test: true
+    # For example, set server.trainset as true to evaluate on a centralized testset (created by aggregating all clients' local testsets)
+    # with the updated global model at the end of a communication round.
+    # Frequency is set by `server.interval`. Negative value for disabling.
+    server:
+      interval: -1
+      train: false
+      val: false
+      test: false
+      # Whether to evaluate the global model in train mode or eval mode.
+      # Evaluating in train mode allows to get better batchnorm statistics, but is dependent on the order of the data.
+      model_in_train_mode: false
 
   verbose_gap: 10 # Interval round of displaying clients training performance on terminal.
-  visible: null # [null, visdom, tensorboard]
+  monitor: null # [null, visdom, tensorboard]
   use_cuda: true # Whether to use cuda for training.
 
   save_log: true # Whether to save log files in out/<method>/<start_time>.
   save_model: false # Whether to save model weights (*.pt) in out/<method>/<start_time>.
-  save_fig: true # Whether to save learning curve firgure (*.png) in out/<method>/<start_time>.
+  save_learning_curve_plot: true # Whether to save learning curve figure (*.png) in out/<method>/<start_time>.
   save_metrics: true # Whether to save metrics (*.csv) in out/<method>/<start_time>.
 
   # Whether to delete output files after user press `Ctrl + C`,
