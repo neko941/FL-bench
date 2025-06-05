@@ -15,6 +15,11 @@ from src.utils.constants import DATA_SHAPE, NUM_CLASSES
 
 
 class FedGenServer(FedAvgServer):
+    algorithm_name: str = "FedGen"
+    all_model_params_personalized = False  # `True` indicates that clients have their own fullset of personalized model parameters.
+    return_diff = False  # `True` indicates that clients return `diff = W_global - W_local` as parameter update; `False` for `W_local` only.
+    client_cls = FedGenClient
+
     @staticmethod
     def get_hyperparams(args_list=None) -> Namespace:
         parser = ArgumentParser()
@@ -35,27 +40,20 @@ class FedGenServer(FedAvgServer):
         parser.add_argument("--min_samples_per_label", type=int, default=1)
         return parser.parse_args(args_list)
 
-    def __init__(
-        self,
-        args: DictConfig,
-        algorithm_name: str = "FedGen",
-        unique_model=False,
-        use_fedavg_client_cls=False,
-        return_diff=False,
-    ):
-        super().__init__(
-            args, algorithm_name, unique_model, use_fedavg_client_cls, return_diff
-        )
+    def __init__(self, args: DictConfig):
+        super().__init__(args, False)
         self.generator = Generator(self)
-        self.init_trainer(FedGenClient, generator=self.generator)
+        self.init_trainer(generator=self.generator)
         self.generator_optimizer = torch.optim.Adam(
             self.generator.parameters(), self.args.fedgen.ensemble_lr
         )
+
         self.generator_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(
             self.generator_optimizer, gamma=0.98
         )
         self.unique_labels = range(NUM_CLASSES[self.args.dataset.name])
         self.teacher_model = deepcopy(self.model)
+        
 
     def package(self, client_id: int):
         server_package = super().package(client_id)
@@ -164,10 +162,14 @@ class Generator(nn.Module):
         # obtain the latent dim
         x = torch.zeros(1, *DATA_SHAPE[server.args.dataset.name])
         self.use_embedding = server.args.fedgen.use_embedding
-        self.latent_dim = server.model.base(x).shape[-1]
+        self.input_shape = server.model.base(x).shape[1:]
+        self.latent_dim = self.input_shape[0]
         self.hidden_dim = server.args.fedgen.hidden_dim
         self.noise_dim = server.args.fedgen.noise_dim
         self.class_num = NUM_CLASSES[server.args.dataset.name]
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, *DATA_SHAPE[server.args.dataset.name], device=server.model.device)
+        self.classifier_input_shape = server.model.base(dummy_input).shape[1:]
 
         if server.args.fedgen.use_embedding:
             self.embedding = nn.Embedding(self.class_num, server.args.fedgen.noise_dim)
@@ -197,6 +199,7 @@ class Generator(nn.Module):
         z = torch.cat([eps, y], dim=1)
         z = self.mlp(z)
         z = self.latent_layer(z)
+        z = z.view(z.shape[0], *self.classifier_input_shape)
         return z, eps
 
 

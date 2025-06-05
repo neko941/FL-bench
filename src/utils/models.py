@@ -19,6 +19,11 @@ class DecoupledModel(nn.Module):
         self.base: nn.Module = None
         self.classifier: nn.Module = None
         self.dropout: list[nn.Module] = []
+        self.device = torch.device("cpu")
+
+    def to(self, device: torch.device):
+        self.device = device
+        return super().to(device)
 
     def need_all_features(self):
         target_modules = [
@@ -40,13 +45,14 @@ class DecoupledModel(nn.Module):
                 "You need to re-write the base and classifier in your custom model class."
             )
         self.dropout = [
-            module
-            for module in list(self.base.modules()) + list(self.classifier.modules())
-            if isinstance(module, nn.Dropout)
+            module for module in self.modules() if isinstance(module, nn.Dropout)
         ]
         if args.common.buffers == "global":
             for module in self.modules():
-                if isinstance(module, torch.nn.BatchNorm2d):
+                if isinstance(
+                    module,
+                    (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d),
+                ):
                     buffers_list = list(module.named_buffers())
                     for name_buffer, buffer in buffers_list:
                         # transform buffer to parameter

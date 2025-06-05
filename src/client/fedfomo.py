@@ -5,7 +5,7 @@ from typing import Any
 import torch
 
 from src.client.fedavg import FedAvgClient
-from src.utils.tools import evaluate_model, vectorize
+from src.utils.functional import evaluate_model, vectorize
 
 
 class FedFomoClient(FedAvgClient):
@@ -34,11 +34,6 @@ class FedFomoClient(FedAvgClient):
         self.client_id = package["client_id"]
         self.local_epoch = package["local_epoch"]
         self.load_data_indices()
-
-        if package["optimizer_state"]:
-            self.optimizer.load_state_dict(package["optimizer_state"])
-        else:
-            self.optimizer.load_state_dict(self.init_optimizer_state)
 
         if package["optimizer_state"]:
             self.optimizer.load_state_dict(package["optimizer_state"])

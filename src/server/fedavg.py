@@ -7,11 +7,10 @@ import random
 import shutil
 import time
 import traceback
-import warnings
 from collections import OrderedDict
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 import numpy as np
 import ray
@@ -33,39 +32,37 @@ from src.utils.constants import (
     MODE,
     OPTIMIZERS,
 )
-from src.utils.metrics import Metrics
-from src.utils.models import MODELS, DecoupledModel
-from src.utils.tools import (
-    Logger,
+from src.utils.functional import (
     evaluate_model,
     fix_random_seed,
     get_optimal_cuda_device,
     initialize_data_loaders,
 )
+from src.utils.logger import Logger
+from src.utils.metrics import Metrics
+from src.utils.models import MODELS, DecoupledModel
 from src.utils.trainer import FLbenchTrainer
 
 
 class FedAvgServer:
+    algorithm_name = "FedAvg"
+    all_model_params_personalized = False  # `True` indicates that clients have their own fullset of personalized model parameters.
+    return_diff = False  # `True` indicates that clients return `diff = W_global - W_local` as parameter update; `False` for `W_local` only.
+    client_cls = FedAvgClient
+
     def __init__(
         self,
         args: DictConfig,
-        algorithm_name: str = "FedAvg",
-        unique_model=False,
-        use_fedavg_client_cls=True,
-        return_diff=False,
+        init_trainer=True,
+        init_model=True,
     ):
         """
         Args:
             `args`: A DictConfig object of the arguments.
-            `algo`: Name of FL method.
-            `unique_model`: `True` indicates that clients have their own fullset model parameters.
-            `use_fedavg_client_cls`: `True` indicates that using default `FedAvgClient()` as the client class.
-            `return_diff`: `True` indicates that clients return `diff = W_global - W_local` as parameter update; `False` for `W_local` only.
+            `init_trainer`: `True` indicates that initializing trainer now (with no extra arguments); `False` for explicitly initializing afterwards.
+            `init_model`: `True` indicates that initializing model parameters; `False` for explicitly initializing afterwards.
         """
         self.args = args
-        self.algorithm_name = algorithm_name
-        self.unique_model = unique_model
-        self.return_diff = return_diff
 
         self.device = get_optimal_cuda_device(self.args.common.use_cuda)
         if self.device.type == "cuda":
@@ -95,45 +92,8 @@ class FedAvgServer:
         self.client_num: int = self.data_partition["separation"]["total"]
 
         # init model(s) parameters
-        self.model: DecoupledModel = MODELS[self.args.model.name](
-            dataset=self.args.dataset.name,
-            pretrained=self.args.model.use_torchvision_pretrained_weights,
-        )
-        self.model.check_and_preprocess(self.args)
-
-        _init_global_params, _init_global_params_name = [], []
-        for key, param in self.model.named_parameters():
-            _init_global_params.append(param.data.clone())
-            _init_global_params_name.append(key)
-
-        self.public_model_param_names = _init_global_params_name
-        self.public_model_params: OrderedDict[str, torch.Tensor] = OrderedDict(
-            zip(_init_global_params_name, _init_global_params)
-        )
-
-        if self.args.model.external_model_weights_path is not None:
-            file_path = str(
-                (FLBENCH_ROOT / self.args.model.external_model_weights_path).absolute()
-            )
-            if os.path.isfile(file_path) and file_path.find(".pt") != -1:
-                self.public_model_params.update(
-                    torch.load(file_path, map_location="cpu")
-                )
-            elif not os.path.isfile(file_path):
-                raise FileNotFoundError(f"{file_path} is not a valid file path.")
-            elif file_path.find(".pt") == -1:
-                raise TypeError(f"{file_path} is not a valid .pt file.")
-
-        self.clients_personal_model_params = {i: {} for i in range(self.client_num)}
-
-        if self.args.common.buffers == "local":
-            _init_buffers = OrderedDict(self.model.named_buffers())
-            for i in range(self.client_num):
-                self.clients_personal_model_params[i] = deepcopy(_init_buffers)
-
-        if self.unique_model:
-            for params_dict in self.clients_personal_model_params.values():
-                params_dict.update(deepcopy(self.model.state_dict()))
+        if init_model:
+            self.init_model()
 
         self.client_optimizer_states = {i: {} for i in range(self.client_num)}
 
@@ -219,38 +179,112 @@ class FedAvgServer:
 
             self.tensorboard = SummaryWriter(log_dir=self.output_dir)
 
-        # init trainer
-        self.trainer: FLbenchTrainer = None
+        # init dataset
         self.dataset = self.get_dataset()
         self.client_data_indices = self.get_clients_data_indices()
-        if use_fedavg_client_cls:
+
+        # init trainer
+        self.trainer: FLbenchTrainer = None
+        if self.client_cls is None or not issubclass(self.client_cls, FedAvgClient):
+            raise ValueError(f"{self.client_cls} is not a subclass of {FedAvgClient}.")
+        if init_trainer:
             self.init_trainer()
 
         # create setup for centralized evaluation
-        (
-            self.trainloader,
-            self.testloader,
-            self.valloader,
-            self.trainset,
-            self.testset,
-            self.valset,
-        ) = initialize_data_loaders(
-            self.dataset, self.client_data_indices, self.args.common.batch_size
+        if 0 < self.args.common.test.server.interval <= self.args.common.global_epoch:
+            if self.all_model_params_personalized:
+                self.logger.warn(
+                    "Warning: Centralized evaluation is not supported for unique model setting."
+                )
+            else:
+                (
+                    self.trainloader,
+                    self.testloader,
+                    self.valloader,
+                    self.trainset,
+                    self.testset,
+                    self.valset,
+                ) = initialize_data_loaders(
+                    self.dataset, self.client_data_indices, self.args.common.batch_size
+                )
+
+    def init_model(
+        self,
+        model: Optional[DecoupledModel] = None,
+        preprocess_func: Optional[Callable[[DecoupledModel], None]] = None,
+        postprocess_func: Optional[Callable[[DecoupledModel], None]] = None,
+    ):
+        """Initialize the global model and client personal model parameters.
+
+            model: The global model. If not provided, will use the default model specified in `args.model.name`. Defaults to None.
+            preprocess_func: A function that takes the global model as input and preprocesses it. Defaults to None.
+            postprocess_func: A function that takes the global model as input and postprocesses it. Defaults to None.
+
+        Raises:
+            FileNotFoundError: If `external_model_weights_path` is not a valid file path or not a `.pt` file.
+            TypeError: If `external_model_weights_path` is not a valid `.pt` file.
+        """
+        if model is None:
+            self.model: DecoupledModel = MODELS[self.args.model.name](
+                dataset=self.args.dataset.name,
+                pretrained=self.args.model.use_torchvision_pretrained_weights,
+            )
+        else:
+            self.model = model
+        self.model.check_and_preprocess(self.args)
+
+        if preprocess_func is not None:
+            preprocess_func(self.model)
+
+        _init_global_params, _init_global_params_name = [], []
+        for key, param in self.model.named_parameters():
+            _init_global_params.append(param.data.clone())
+            _init_global_params_name.append(key)
+
+        self.public_model_param_names = _init_global_params_name
+        self.public_model_params: OrderedDict[str, torch.Tensor] = OrderedDict(
+            zip(_init_global_params_name, _init_global_params)
         )
 
-    def init_trainer(self, fl_client_cls=FedAvgClient, **extras):
+        if self.args.model.external_model_weights_path is not None:
+            file_path = str(
+                (FLBENCH_ROOT / self.args.model.external_model_weights_path).absolute()
+            )
+            if os.path.isfile(file_path) and file_path.find(".pt") != -1:
+                self.public_model_params.update(
+                    torch.load(file_path, map_location="cpu")
+                )
+            elif not os.path.isfile(file_path):
+                raise FileNotFoundError(f"{file_path} is not a valid file path.")
+            elif file_path.find(".pt") == -1:
+                raise TypeError(f"{file_path} is not a valid .pt file.")
+
+        self.clients_personal_model_params = {i: {} for i in range(self.client_num)}
+
+        if self.args.common.buffers == "local":
+            _init_buffers = OrderedDict(self.model.named_buffers())
+            for i in range(self.client_num):
+                self.clients_personal_model_params[i] = deepcopy(_init_buffers)
+
+        if self.all_model_params_personalized:
+            for params_dict in self.clients_personal_model_params.values():
+                params_dict.update(deepcopy(self.model.state_dict()))
+
+        if postprocess_func is not None:
+            postprocess_func(self.model)
+
+    def init_trainer(self, **extras):
         """Initiate the FL-bench trainier that responsible to client training.
-        `extras` are the arguments of `fl_client_cls.__init__()` that not in
-        `[model, args, optimizer_cls, lr_scheduler_cls, dataset, data_indices,
-        device, return_diff]`, which are essential for all methods in FL-bench.
 
         Args:
-            `fl_client_cls`: The class of client in FL method. Defaults to `FedAvgClient`.
+            `extras`: Arguments of `self.client_cls.__init__()` that NOT included in
+        `[model, args, optimizer_cls, lr_scheduler_cls, dataset, data_indices,
+        device, return_diff]`.
         """
         if self.args.mode == "serial" or self.args.parallel.num_workers < 2:
             self.trainer = FLbenchTrainer(
                 server=self,
-                client_cls=fl_client_cls,
+                client_cls=self.client_cls,
                 mode=MODE.SERIAL,
                 num_workers=0,
                 init_args=dict(
@@ -276,7 +310,7 @@ class FedAvgServer:
             return_diff_ref = ray.put(self.return_diff)
             self.trainer = FLbenchTrainer(
                 server=self,
-                client_cls=fl_client_cls,
+                client_cls=self.client_cls,
                 mode=MODE.PARALLEL,
                 num_workers=int(self.args.parallel.num_workers),
                 init_args=dict(
@@ -534,6 +568,13 @@ class FedAvgServer:
     def test_global_model(self):
         """The function for testing FL method's output (a single global model
         or personalized client models)."""
+        # Has client personal model parameters, centralized evaluation for the global model is not available.
+        if any(
+            len(params_dict)
+            for params_dict in self.clients_personal_model_params.values()
+        ):
+            return
+        self.model.load_state_dict(self.public_model_params, strict=False)
         self.testing = True
         metrics = self.evaluate(
             model_in_train_mode=self.args.common.test.server.model_in_train_mode
@@ -826,11 +867,11 @@ class FedAvgServer:
 
     def save_model_weights(self):
         model_name = f"{self.args.dataset.name}_{self.args.common.global_epoch}_{self.args.model}.pt"
-        if not self.unique_model:
+        if not self.all_model_params_personalized:
             torch.save(self.public_model_params, self.output_dir / model_name)
         else:
-            warnings.warn(
-                f"{self.algorithm_name}'s unique_model = True, "
+            self.logger.warn(
+                f"{self.algorithm_name}'s all_model_params_personalized = True # `True` indicates that clients have their own fullset of personalized model parameters., "
                 "which does not support saving model parameters. "
                 "So the saving is skipped."
             )

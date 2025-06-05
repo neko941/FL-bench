@@ -10,6 +10,11 @@ from src.utils.constants import NUM_CLASSES
 
 
 class pFedFDAServer(FedAvgServer):
+    algorithm_name: str = "pFedFDA"
+    all_model_params_personalized = False  # `True` indicates that clients have their own fullset of personalized model parameters.
+    return_diff = False  # `True` indicates that clients return `diff = W_global - W_local` as parameter update; `False` for `W_local` only.
+    client_cls = pFedFDAClient
+
     @staticmethod
     def get_hyperparams(arg_list: Optional[List[str]] = None) -> Namespace:
         parser = ArgumentParser()
@@ -19,18 +24,8 @@ class pFedFDAServer(FedAvgServer):
         parser.add_argument("--num_cv_folds", type=int, default=2)
         return parser.parse_args(arg_list)
 
-    def __init__(
-        self,
-        args: DictConfig,
-        algorithm_name: str = "pFedFDA",
-        unique_model=False,
-        use_fedavg_client_cls=False,
-        return_diff=False,
-    ):
-        super().__init__(
-            args, algorithm_name, unique_model, use_fedavg_client_cls, return_diff
-        )
-        self.init_trainer(pFedFDAClient)
+    def __init__(self, args: DictConfig):
+        super().__init__(args)
 
         self.global_means = torch.rand(
             [NUM_CLASSES[self.args.dataset.name], self.model.classifier.in_features]
@@ -68,9 +63,9 @@ class pFedFDAServer(FedAvgServer):
         package["covariances_beta"] = self.client_covariances_beta[client_id]
         return package
 
-    def aggregate(self, client_packages: Dict[str, Dict[str, Any]]):
+    def aggregate_client_updates(self, client_packages: Dict[str, Dict[str, Any]]):
         # common aggregation
-        super().aggregate(client_packages)
+        super().aggregate_client_updates(client_packages)
 
         # save client-specific variables
         for client_id, package in client_packages.items():
